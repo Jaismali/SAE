@@ -1,0 +1,10 @@
+checkpoints/
+results/
+logs/
+activations_cache/
+__pycache__/
+*.pyc
+.venv/
+*.json
+HG key.txt
+.idea/
