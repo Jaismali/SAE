@@ -50,16 +50,6 @@ class FakeSAE:
     def encode(self, resid):
         return _FakeArray(self._feature_acts_per_call)
 
-    def no_error_term_context(self):
-        class _NullContext:
-            def __enter__(self_):
-                return None
-
-            def __exit__(self_, *args):
-                return False
-
-        return _NullContext()
-
 
 class FakeModel:
     """Fake model that returns a fixed token sequence and matching

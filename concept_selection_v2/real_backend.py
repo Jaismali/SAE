@@ -161,10 +161,9 @@ class RealConceptBackend:
 
         for text in self._stream_reference_texts():
             tokens = model.to_tokens(text)[:, : self.max_tokens_per_doc]
-            with sae.no_error_term_context():
-                _, cache = model.run_with_cache(
-                    tokens, stop_at_layer=layer + 1, names_filter=hook_name
-                )
+            _, cache = model.run_with_cache(
+                tokens, stop_at_layer=layer + 1, names_filter=hook_name
+            )
             resid = cache[hook_name][0]  # (seq_len, d_model)
             feature_acts = sae.encode(resid)  # (seq_len, num_features)
 
