@@ -44,15 +44,25 @@ sink/structural artifact) than a candidate excluded by those two.
 Downstream code and the manifest must record WHICH filter excluded a
 given candidate, not collapse everything into one "excluded" bucket.
 
-ASSUMPTION FLAGGED (not verified against the original file, which
-wasn't available in this session): this module assumes
-monosemanticity_filter.py's shape is "passes_filter() returns True
-for KEPT candidates" and "apply_filter() returns accepted/rejected/
-reasons." If Month 1's actual convention differs (e.g. inverted
-boolean sense, different field names), this module's public interface
-should be adjusted to match it exactly before wiring into
-selection_pipeline.py -- don't silently keep a mismatched convention
-just because this file was written independently.
+ASSUMPTION CONFIRMED / RECONCILED against the real monosemanticity_filter.py
+and deduplication.py (now reviewed, not guessed at):
+  - "passes_*_filter() returns True for KEPT candidates" was correct.
+  - Function naming was NOT correct: Month 1 embeds the filter name in
+    each function (passes_monosemanticity_filter, deduplicate_by_decoder_vector),
+    not a generic passes_filter/apply_filter. Renamed below to
+    passes_structural_token_filter / apply_structural_token_filter to
+    avoid a name collision once selection_pipeline.py imports all three
+    filter modules together.
+  - Reasons field naming was NOT correct: monosemanticity_filter.py (the
+    closer analog -- both are single-candidate threshold filters, unlike
+    dedup's pairwise-clustering shape) uses `rejection_reasons`, not
+    `reasons`. Renamed to match.
+  - One GENUINE, UNAVOIDABLE difference, not a mismatch to fix: this
+    filter's criterion is population-relative (needs the batch median),
+    so passes_structural_token_filter() takes an extra
+    batch_median_magnitude argument that monosemanticity's and dedup's
+    per-candidate/pairwise functions don't need. This is inherent to
+    what the filter measures, not an inconsistency to resolve.
 """
 
 import statistics
@@ -124,7 +134,7 @@ def compute_batch_median_magnitude(candidates: List[ConceptCandidate]) -> float:
     return statistics.median(nonzero_magnitudes)
 
 
-def passes_filter(
+def passes_structural_token_filter(
     candidate: ConceptCandidate,
     batch_median_magnitude: float,
     magnitude_ratio_threshold: float = MAGNITUDE_RATIO_THRESHOLD,
@@ -153,11 +163,11 @@ def passes_filter(
 class FilterResult:
     accepted: List[ConceptCandidate]
     rejected: List[ConceptCandidate]
-    reasons: dict  # feature_id -> str, populated only for rejected candidates
+    rejection_reasons: dict  # feature_id -> str, populated only for rejected candidates
     batch_median_magnitude: float
 
 
-def apply_filter(
+def apply_structural_token_filter(
     candidates: List[ConceptCandidate],
     magnitude_ratio_threshold: float = MAGNITUDE_RATIO_THRESHOLD,
     structural_fraction_threshold: float = STRUCTURAL_TOKEN_FRACTION_THRESHOLD,
@@ -173,10 +183,10 @@ def apply_filter(
 
     accepted: List[ConceptCandidate] = []
     rejected: List[ConceptCandidate] = []
-    reasons: dict = {}
+    rejection_reasons: dict = {}
 
     for candidate in candidates:
-        if passes_filter(
+        if passes_structural_token_filter(
             candidate,
             batch_median_magnitude,
             magnitude_ratio_threshold,
@@ -186,7 +196,7 @@ def apply_filter(
         else:
             magnitude_ratio = candidate.mean_activation_magnitude / batch_median_magnitude
             structural_fraction = compute_structural_fraction(candidate.top_activating_tokens)
-            reasons[candidate.feature_id] = (
+            rejection_reasons[candidate.feature_id] = (
                 f"structural_token_filter: magnitude_ratio={magnitude_ratio:.2f}x "
                 f"(threshold >{magnitude_ratio_threshold}x), "
                 f"structural_fraction={structural_fraction:.1%} "
@@ -197,6 +207,6 @@ def apply_filter(
     return FilterResult(
         accepted=accepted,
         rejected=rejected,
-        reasons=reasons,
+        rejection_reasons=rejection_reasons,
         batch_median_magnitude=batch_median_magnitude,
     )

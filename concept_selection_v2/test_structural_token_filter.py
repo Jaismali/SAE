@@ -20,10 +20,10 @@ from structural_token_filter import (
     MAGNITUDE_RATIO_THRESHOLD,
     STRUCTURAL_TOKEN_FRACTION_THRESHOLD,
     FilterResult,
-    apply_filter,
+    apply_structural_token_filter,
     compute_batch_median_magnitude,
     compute_structural_fraction,
-    passes_filter,
+    passes_structural_token_filter,
 )
 
 
@@ -74,8 +74,8 @@ def test_real_magnitude_outliers_are_excluded():
     feat_4 = REAL_STRUCTURAL_DOMINATED_CANDIDATES["feat_4"]
     feat_11 = REAL_STRUCTURAL_DOMINATED_CANDIDATES["feat_11"]
 
-    assert passes_filter(feat_4, REAL_BATCH_MEDIAN) is False
-    assert passes_filter(feat_11, REAL_BATCH_MEDIAN) is False
+    assert passes_structural_token_filter(feat_4, REAL_BATCH_MEDIAN) is False
+    assert passes_structural_token_filter(feat_11, REAL_BATCH_MEDIAN) is False
 
 
 def test_real_non_outliers_are_not_excluded():
@@ -88,9 +88,9 @@ def test_real_non_outliers_are_not_excluded():
     feat_6 = REAL_STRUCTURAL_DOMINATED_CANDIDATES["feat_6"]
     feat_8 = REAL_STRUCTURAL_DOMINATED_CANDIDATES["feat_8"]
 
-    assert passes_filter(feat_3, REAL_BATCH_MEDIAN) is True
-    assert passes_filter(feat_6, REAL_BATCH_MEDIAN) is True
-    assert passes_filter(feat_8, REAL_BATCH_MEDIAN) is True
+    assert passes_structural_token_filter(feat_3, REAL_BATCH_MEDIAN) is True
+    assert passes_structural_token_filter(feat_6, REAL_BATCH_MEDIAN) is True
+    assert passes_structural_token_filter(feat_8, REAL_BATCH_MEDIAN) is True
 
 
 def test_real_data_ratios_match_diagnostic_output():
@@ -118,7 +118,7 @@ def test_boundary_exactly_5x_magnitude_is_not_excluded():
     median = 100.0
     candidate = _make_candidate("boundary_5x", magnitude=500.0, structural_fraction=0.90)
     assert candidate.mean_activation_magnitude / median == pytest.approx(5.0)
-    assert passes_filter(candidate, median) is True
+    assert passes_structural_token_filter(candidate, median) is True
 
 
 def test_boundary_just_above_5x_magnitude_with_high_fraction_is_excluded():
@@ -126,7 +126,7 @@ def test_boundary_just_above_5x_magnitude_with_high_fraction_is_excluded():
     fraction, must be excluded."""
     median = 100.0
     candidate = _make_candidate("boundary_5x_plus", magnitude=500.01, structural_fraction=0.90)
-    assert passes_filter(candidate, median) is False
+    assert passes_structural_token_filter(candidate, median) is False
 
 
 def test_boundary_exactly_50_percent_structural_fraction_is_not_dominated():
@@ -136,7 +136,7 @@ def test_boundary_exactly_50_percent_structural_fraction_is_not_dominated():
     median = 100.0
     candidate = _make_candidate("boundary_50pct", magnitude=10000.0, structural_fraction=0.50)
     assert compute_structural_fraction(candidate.top_activating_tokens) == pytest.approx(0.50)
-    assert passes_filter(candidate, median) is True
+    assert passes_structural_token_filter(candidate, median) is True
 
 
 def test_boundary_just_above_50_percent_with_high_magnitude_is_excluded():
@@ -144,7 +144,7 @@ def test_boundary_just_above_50_percent_with_high_magnitude_is_excluded():
     magnitude outlier, must be excluded."""
     median = 100.0
     candidate = _make_candidate("boundary_50pct_plus", magnitude=10000.0, structural_fraction=0.60)
-    assert passes_filter(candidate, median) is False
+    assert passes_structural_token_filter(candidate, median) is False
 
 
 def test_high_magnitude_alone_without_structural_dominance_is_not_excluded():
@@ -152,7 +152,7 @@ def test_high_magnitude_alone_without_structural_dominance_is_not_excluded():
     be excluded by this filter -- the conjunction requires both."""
     median = 100.0
     candidate = _make_candidate("high_mag_low_structural", magnitude=2000.0, structural_fraction=0.30)
-    assert passes_filter(candidate, median) is True
+    assert passes_structural_token_filter(candidate, median) is True
 
 
 def test_structural_dominance_alone_without_magnitude_outlier_is_not_excluded():
@@ -161,7 +161,7 @@ def test_structural_dominance_alone_without_magnitude_outlier_is_not_excluded():
     justification for the conjunction over a fraction-only rule."""
     median = 100.0
     candidate = _make_candidate("high_structural_normal_mag", magnitude=110.0, structural_fraction=0.90)
-    assert passes_filter(candidate, median) is True
+    assert passes_structural_token_filter(candidate, median) is True
 
 
 # --- Batch-level tests ---
@@ -186,7 +186,7 @@ def test_compute_batch_median_magnitude_all_zero_raises():
 
 
 def test_apply_filter_end_to_end_matches_real_diagnostic_outcome():
-    """Full apply_filter() call across a batch shaped like the real
+    """Full apply_structural_token_filter() call across a batch shaped like the real
     n=20 run (5 structural-dominated + 15 'normal' filler candidates
     near the median), confirming the bulk interface produces the same
     accept/reject split as the per-candidate tests above."""
@@ -196,7 +196,7 @@ def test_apply_filter_end_to_end_matches_real_diagnostic_outcome():
     ]
     batch = filler + list(REAL_STRUCTURAL_DOMINATED_CANDIDATES.values())
 
-    result = apply_filter(batch)
+    result = apply_structural_token_filter(batch)
 
     assert isinstance(result, FilterResult)
     rejected_ids = {c.feature_id for c in result.rejected}
@@ -211,5 +211,5 @@ def test_apply_filter_end_to_end_matches_real_diagnostic_outcome():
     # Every rejected candidate must have a logged reason -- never a
     # silent exclusion.
     for feature_id in rejected_ids:
-        assert feature_id in result.reasons
-        assert "structural_token_filter" in result.reasons[feature_id]
+        assert feature_id in result.rejection_reasons
+        assert "structural_token_filter" in result.rejection_reasons[feature_id]
