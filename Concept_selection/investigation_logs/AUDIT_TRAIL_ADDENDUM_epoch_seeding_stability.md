@@ -169,7 +169,33 @@ unblocked, not solved here.
 
 ---
 
-## PROJECT CONVENTION: External composition over pilot_runner.py by default
+## FINDING: Sequence length (64) and learning rate (2e-4) reviewed -- no issues found
+
+Completes Part B's three-setting hyperparameter review (epochs, LR,
+sequence length), which had only partially been addressed until now.
+
+**Sequence length:** tokenized every induction and correction training
+text, for all 5 pilot concepts, with the real Gemma 3 1B-IT tokenizer
+(not an approximation). Maximum length found: 13 tokens, against the
+64-token limit -- 51+ token margin in every case, across every concept
+and stage. No truncation is occurring anywhere. Checked via
+`check_sequence_length_truncation.py`.
+
+**Learning rate:** qualitative review of real loss curves (seeded,
+reproducible `dog_theme` run, induction=4/correction=1) found no
+divergence signature -- the noise band visibly narrows across
+induction's later epochs (epoch 1 range ~0.48-0.92 -> epoch 3 range
+~0.26-0.51), which is the opposite of what LR-too-high instability
+would show. Correction's single epoch is noisier but structurally
+similar to induction's own first-epoch noise, consistent with the
+already-established batch-size-1 noise floor rather than an LR-
+specific problem. Deliberately NOT escalated into a controlled
+multi-LR comparison run: LR was never flagged as a suspect (the noise
+was attributed to batch-size-1 variance early in this investigation
+and nothing since has contradicted that), and this is an internal
+pipeline health-check, not a headline claim -- the same reasoning that
+kept the induction-epoch search from chasing unnecessary precision on
+a number that never appears in a results table.
 
 Written as a standing rule after this question recurred twice in one
 session (the fine-tune-call stage-labeling closure, and this stability
