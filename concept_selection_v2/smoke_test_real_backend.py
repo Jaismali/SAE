@@ -33,6 +33,7 @@ Usage:
 from collections import Counter
 
 from real_backend import RealConceptBackend, REFERENCE_CORPUS_DATASET
+from concept_filter_pipeline import run_concept_filter_pipeline
 
 MODEL_ID = "google/gemma-3-1b-it"
 SAE_ID = "layer_13_width_16k_l0_medium"
@@ -266,6 +267,71 @@ def main():
             print("  clear break -- which would mean the fraction threshold isn't doing")
             print("  independent work and the conjunction may reduce to magnitude alone.")
         print()
+
+    print("=== Diagnostic 5: real candidates through the wired filter pipeline ===")
+    print("  (Previously only tested against synthetic data -- this is the first")
+    print("  time the ACTUAL locked pipeline order runs on real GPU-derived candidates.)")
+    pipeline_result = run_concept_filter_pipeline(candidates)
+    print(f"  Input: {len(candidates)} candidates")
+    print(
+        f"  After structural-token filter: {len(pipeline_result.structural_filter_result.accepted)} "
+        f"kept, {len(pipeline_result.structural_filter_result.rejected)} rejected"
+    )
+    if pipeline_result.structural_filter_result.rejected:
+        print("    Rejected by structural filter:")
+        for feature_id, reason in pipeline_result.structural_filter_result.rejection_reasons.items():
+            print(f"      {feature_id}: {reason}")
+    print(
+        f"  After monosemanticity filter: {len(pipeline_result.monosemanticity_result.accepted)} "
+        f"kept, {len(pipeline_result.monosemanticity_result.rejected)} rejected"
+    )
+    if pipeline_result.monosemanticity_result.rejected:
+        rejected_ids = list(pipeline_result.monosemanticity_result.rejection_reasons.keys())
+        print(f"    Rejected by monosemanticity filter: {rejected_ids}")
+        print(
+            "    NOTE: at this sample size, check whether monosemanticity rejected "
+            "candidates for a substantive reason or because the current heuristic "
+            "auto-interp score doesn't separate real signal well yet -- this "
+            "threshold (0.5) is itself still pending re-validation against real "
+            "score distributions, per Part A's own requirement."
+        )
+    print(
+        f"  After dedup: {len(pipeline_result.dedup_result.kept)} kept, "
+        f"{len(pipeline_result.dedup_result.discarded)} discarded"
+    )
+    if pipeline_result.dedup_result.discarded:
+        print("    Discarded by dedup:")
+        for feature_id, reason in pipeline_result.dedup_result.discard_reasons.items():
+            print(f"      {feature_id}: {reason}")
+    print(f"  FINAL: {len(pipeline_result.final_kept)}/{len(candidates)} candidates survived all three filters.")
+    print()
+
+    print("=== Diagnostic 6: auto_interp_score distribution + manual spot-check ===")
+    print("  (Added after the 89% monosemanticity rejection rate raised a real question:")
+    print("  is the 0.5 threshold miscalibrated, or is the heuristic itself structurally")
+    print("  flawed? This diagnostic gathers evidence for that question -- it does not")
+    print("  answer it by itself.)")
+    structural_survivors = pipeline_result.structural_filter_result.accepted
+    scored = sorted(
+        [(c.feature_id, c.auto_interp_score) for c in structural_survivors],
+        key=lambda x: x[1],
+    )
+    print(f"  auto_interp_score across {len(scored)} structural-survivors, ascending:")
+    for feature_id, score in scored:
+        print(f"    {feature_id}: {score:.3f}")
+    print()
+
+    rejected_candidates = pipeline_result.monosemanticity_result.rejected
+    spot_check_n = min(6, len(rejected_candidates))
+    print(f"  Manual spot-check: top-10 tokens for {spot_check_n} of the "
+          f"{len(rejected_candidates)} monosemanticity-rejected candidates")
+    print("  (Read these yourself: do they show a diverse-but-coherent theme")
+    print("  -- e.g. country names, motion verbs -- or genuinely incoherent,")
+    print("  unrelated words? This is the direct test of the hypothesis, not")
+    print("  just an inference from the score shape above.)")
+    for c in rejected_candidates[:spot_check_n]:
+        print(f"    {c.feature_id} (score={c.auto_interp_score:.3f}): {c.top_activating_tokens}")
+    print()
 
     print("=== Smoke test complete. Read the output above before trusting it. ===")
     print("No filtering rules have been built or applied based on any of the "

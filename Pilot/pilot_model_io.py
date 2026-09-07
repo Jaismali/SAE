@@ -1,19 +1,7 @@
-"""
-Part C Pilot - Step 5: Real model I/O.
 
-The concrete implementations of load_base_model_fn, fine_tune_fn, and
-save_checkpoint_fn that pilot_runner.run_pilot_for_concept() expects.
-These require torch, transformers, peft, and bitsandbytes -- the actual
-training stack already confirmed working on the local RTX 4060 machine
-(see local_setup/test_gemma_load.py).
-
-CANNOT be meaningfully unit-tested without that real stack and a GPU.
-Only the pure path-construction logic here is covered by
-test_pilot_model_io.py; everything else is verified by actually running
-run_pilot_smoke_test() below on the target machine.
-"""
-
+import csv
 import os
+from datetime import datetime, timezone
 
 from training_config import (
     LoraSettings,
@@ -40,14 +28,144 @@ def build_checkpoint_path(base_checkpoint_dir: str, tag: str) -> str:
     return os.path.join(base_checkpoint_dir, tag)
 
 
+LOSS_LOG_FIELDNAMES = ["timestamp_utc", "epoch", "step_in_epoch", "global_step", "loss"]
+
+
+def append_loss_log_row(
+    log_path: str,
+    epoch: int,
+    step_in_epoch: int,
+    global_step: int,
+    loss_value: float,
+) -> None:
+    """Appends one training-step's loss to a CSV file, writing the header
+    only if the file doesn't already exist yet. Pure I/O, no torch
+    dependency -- fully testable without a GPU or the real ML stack.
+
+    This was added specifically because Month 1's pilot run had NO loss
+    logging at all (no TensorBoard, no CSV, no printed loss, no wandb) --
+    confirmed by inspection, not assumed. Per Part B's requirement to
+    review pilot hyperparameters against real loss curves, this is the
+    minimum needed to make that review possible on the NEXT run; it does
+    not retroactively create data for the run that already happened.
+    """
+    log_dir = os.path.dirname(log_path)
+    if log_dir:
+        os.makedirs(log_dir, exist_ok=True)
+
+    file_is_new = not os.path.exists(log_path)
+    with open(log_path, "a", newline="", encoding="utf-8") as log_file:
+        writer = csv.DictWriter(log_file, fieldnames=LOSS_LOG_FIELDNAMES)
+        if file_is_new:
+            writer.writeheader()
+        writer.writerow(
+            {
+                "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                "epoch": epoch,
+                "step_in_epoch": step_in_epoch,
+                "global_step": global_step,
+                "loss": loss_value,
+            }
+        )
+
+
+def set_deterministic_seed(seed: int) -> None:
+    """Sets the RNG state so LoRA adapter initialization (and any other
+    randomness in the training loop) becomes reproducible given the same
+    seed. Extracted as its own function so it's independently testable
+    and independently loggable/callable, rather than buried inline.
+
+    MOTIVATION, CONFIRMED NOT ASSUMED: grep of this file before this
+    change found ZERO calls to torch.manual_seed or any other seeding
+    mechanism anywhere in the training loop. Every run in this project's
+    epoch/hyperparameter investigation to date was UNSEEDED -- meaning
+    none of it is currently reproducible, and any run-to-run instability
+    observed (e.g. ocean_theme's degenerate-repetition pattern) could
+    not be cleanly attributed to "different random draws from the same
+    distribution" versus uncontrolled RNG-state effects from prior calls,
+    library init order, or system state. This is a real, standalone gap
+    against the project's reproducibility standard, independent of any
+    specific hyperparameter decision -- see the audit trail.
+
+    ALSO disables cuDNN's non-deterministic algorithm selection
+    (benchmark mode) and enables its deterministic mode -- without this,
+    torch.manual_seed alone does NOT guarantee identical results on GPU,
+    since cuDNN can pick different (faster but non-reproducible) kernels
+    run to run. Added proactively rather than discovered as a second gap
+    after the confirmation run showed unexplained residual variation.
+
+    HONEST CAVEAT, not swept under this function's confidence: 4-bit
+    quantized training (bitsandbytes) may still have small residual
+    kernel-level nondeterminism beyond what torch/cuDNN flags control.
+    "Same seed twice" should be checked for the SAME qualitative outcome
+    and near-identical loss trajectory -- bit-for-bit identical floats
+    on GPU with quantization in the loop is a stronger claim than this
+    function can guarantee, and shouldn't be assumed without evidence.
+    """
+    import torch
+
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
+
+SEED_LOG_FIELDNAMES = ["timestamp_utc", "concept_name", "seed", "note"]
+
+
+def log_seed_used(loss_log_dir: str, concept_name: str, seed: int, note: str = "") -> str:
+    """Appends a record of which explicit seed was used for a concept's
+    run to a CSV, so seeds are auditable after the fact -- per-run,
+    not just per-project. Returns the log file's path.
+
+    Placed alongside the loss logs (same directory) rather than in
+    checkpoint metadata, since PilotConceptResult / write_results_log
+    in pilot_runner.py and run_pilot.py are tested code this session
+    deliberately avoided modifying blind (same Option-A-style choice
+    as the fine_tune_fn call-order coupling). This keeps seed logging
+    additive and independently auditable without touching that
+    interface.
+    """
+    log_path = os.path.join(loss_log_dir, "seeds_used.csv")
+    log_dir = os.path.dirname(log_path)
+    if log_dir:
+        os.makedirs(log_dir, exist_ok=True)
+
+    file_is_new = not os.path.exists(log_path)
+    with open(log_path, "a", newline="", encoding="utf-8") as log_file:
+        writer = csv.DictWriter(log_file, fieldnames=SEED_LOG_FIELDNAMES)
+        if file_is_new:
+            writer.writeheader()
+        writer.writerow(
+            {
+                "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                "concept_name": concept_name,
+                "seed": seed,
+                "note": note,
+            }
+        )
+    return log_path
+
+
 def load_base_model(
     model_id: str = MODEL_ID,
     lora_settings: LoraSettings = None,
     quantization_settings: QuantizationSettings = None,
+    seed: int = None,
 ):
     """Loads Gemma 3 1B-IT in 4-bit and attaches a fresh LoRA adapter.
     Returns (model, tokenizer). Requires the real ML stack; not directly
-    unit-testable without it."""
+    unit-testable without it.
+
+    seed (optional): if provided, set_deterministic_seed(seed) is called
+    BEFORE get_peft_model() creates the LoRA adapter's randomly-initialized
+    weights -- this is the specific point where unseeded randomness
+    previously entered every run. Default None preserves the exact
+    previous (unseeded) behavior for any caller that doesn't pass one,
+    though going forward every real pilot/comparison run should pass an
+    explicit, LOGGED seed rather than relying on the default.
+    """
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
     from peft import get_peft_model
@@ -55,6 +173,9 @@ def load_base_model(
     lora_settings = lora_settings or LoraSettings()
     quantization_settings = quantization_settings or QuantizationSettings()
     validate_locked_parameters(lora_settings, quantization_settings)
+
+    if seed is not None:
+        set_deterministic_seed(seed)
 
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     if tokenizer.pad_token is None:
@@ -77,13 +198,27 @@ def fine_tune_on_texts(
     num_epochs: int = DEFAULT_NUM_EPOCHS,
     learning_rate: float = DEFAULT_LEARNING_RATE,
     max_sequence_length: int = DEFAULT_MAX_SEQUENCE_LENGTH,
+    loss_log_path: str = None,
+    loss_history: list = None,
 ):
     """Runs a short, manual causal-LM fine-tuning loop over `texts`.
     A plain training loop (not the full HF Trainer) is used deliberately
     for a pilot this small -- it keeps step count and behavior fully
     transparent and easy to log, rather than hidden inside Trainer's
     configuration surface. Returns the same model object, updated in
-    place (LoRA adapter weights only are trainable)."""
+    place (LoRA adapter weights only are trainable).
+
+    loss_log_path (optional): if provided, every step's loss is appended
+    to this CSV file via append_loss_log_row(). Added after confirming
+    Month 1's pilot run captured NO loss data at all -- default is None,
+    so existing callers (e.g. run_pilot_smoke_test) are unaffected unless
+    they explicitly opt in.
+
+    loss_history (optional): if provided (an empty list), every step's
+    loss value is also appended to it in place, for immediate in-memory
+    inspection without needing to re-read the CSV. Also opt-in, also
+    non-breaking for existing callers.
+    """
     import torch
 
     model.train()
@@ -92,12 +227,21 @@ def fine_tune_on_texts(
         lr=learning_rate,
     )
 
+    global_step = 0
     for epoch in range(num_epochs):
-        for text in texts:
+        for step_in_epoch, text in enumerate(texts):
             loss = _training_step(model, tokenizer, text, max_sequence_length)
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
+
+            loss_value = loss.item()
+            if loss_log_path is not None:
+                append_loss_log_row(loss_log_path, epoch, step_in_epoch, global_step, loss_value)
+            if loss_history is not None:
+                loss_history.append(loss_value)
+
+            global_step += 1
 
     model.eval()
     return model
