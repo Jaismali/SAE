@@ -78,39 +78,48 @@ implicitly decided by whatever's easiest to code:
 
 ## Design decision 2: cost / rate-limit estimate, done BEFORE building
 
-**Known unknown, flagged rather than guessed past:** the exact number
-of RAW candidate features that will be scored before filtering down to
-the final 40-50 concept manifest is not yet fixed -- this depends on
-Month 1's stratified frequency-quartile sampling design, which
-determines how many candidates get pulled per tier before the
-monosemanticity/dedup/structural filters reduce that pool. This number
-needs to come from the actual Concept_selection/ pipeline configuration,
-not be assumed here.
+**Correction, after investigation (not assumed, checked):** the "raw
+candidate pool size before filtering" is NOT a number sitting in the
+existing codebase waiting to be found. Checked `stratification.py`
+(defines tier BOUNDARIES, not pool sizes) and `Concept_selection/
+real_backend.py` (confirmed to be the original, still-unimplemented
+Month 1 stub -- identical `NotImplementedError`, no candidate-count
+default anywhere; Month 1 never built a real backend in that folder at
+all). This number was never decided anywhere in this project. It is a
+genuine open design decision, not a lookup task -- continuing to
+search for it in more files would be searching for something that
+doesn't exist.
 
-**Rough estimate, pending that real number:**
-- Each candidate feature needs: 1 explainer call + 1 simulator call
-  (assuming a single simulator call can score all ~10 held-out contexts
-  at once, which the literature's prompting approach supports) = 2 API
-  calls per candidate.
-- Per-call size: explainer prompt includes top-activating examples
-  (~10-20 short snippets) -- roughly 500-1500 input tokens, a few
-  hundred output tokens for the explanation. Simulator prompt includes
-  the explanation plus 10 held-out contexts -- roughly 800-2000 input
-  tokens, up to a few hundred output tokens for the per-token
-  predictions.
-- **Illustrative scenario (numbers ARE placeholders pending the real
-  candidate count):** if ~300-500 raw candidates need scoring before
-  filtering to 40-50 final concepts, that's ~600-1000 API calls total,
-  roughly 1-2M total tokens combined input+output. This is a small
-  fraction of what a single real GPU pilot run already costs in time,
-  and should be inexpensive in absolute API cost terms -- but the
-  exact dollar figure depends on current Anthropic API pricing, which
-  should be checked at build time (pricing can change) rather than
-  quoted from memory here.
-- **ACTION ITEM before building:** get the real candidate-pool count
-  from the actual Concept_selection/ pipeline config, and re-run this
-  estimate with real numbers before starting the API-calling loop, not
-  just an illustrative scenario.
+**Revised plan, matching how every other threshold this session got
+locked (5x, 50%, induction=4) -- from observed data, not assumed in
+advance:**
+
+1. Do NOT pick a total raw-candidate count upfront.
+2. Run the explainer+simulator auto-interp module against a modest
+   PILOT batch first -- proposed 50-100 raw candidates, similar in
+   spirit to the 20-candidate smoke tests already run against the real
+   SAELens backend earlier this session.
+3. Measure the REAL pass-rate through the full filter pipeline
+   (structural-token -> monosemanticity -> dedup, using genuine LLM-
+   based scores instead of the heuristic) on that pilot batch.
+4. Use that observed pass-rate to calculate how large a raw pool is
+   actually needed to reach the 40-50 final concept target, and THEN
+   compute a real API-call/cost estimate from that number -- not an
+   illustrative scenario.
+
+**Per-call cost estimate (this part remains a reasonable placeholder,
+independent of the pool-size question):** each candidate needs 1
+explainer call + 1 simulator call. Explainer: ~500-1500 input tokens
+(top-activating examples), few hundred output tokens. Simulator:
+~800-2000 input tokens (explanation + ~10 held-out contexts), up to a
+few hundred output tokens. Actual Anthropic API pricing should be
+checked at build time, not quoted from memory here, since pricing can
+change.
+
+**ACTION ITEM before building:** run the 50-100 candidate pilot batch
+first, and derive both the real pool-size requirement and the real
+cost estimate from its observed pass-rate -- replacing this document's
+placeholder numbers with real ones once that pilot batch runs.
 
 ## Neuronpedia deadline: 2 weeks, reasoning stated explicitly
 
@@ -130,13 +139,20 @@ original email, in case that's simply sitting unseen.
 
 1. Follow up with Neuronpedia via Slack/GitHub this week (independent
    of the rest of this plan).
-2. Get the real raw-candidate-pool count from Concept_selection/'s
-   pipeline design, to replace the illustrative cost estimate above
-   with real numbers.
-3. Build the explainer + simulator API-calling module (not started).
-4. Run it against an initial pilot batch of real candidates.
-5. Set the monosemanticity threshold from that real score distribution
+2. Build the explainer + simulator API-calling module (not started).
+3. Run it against a 50-100 candidate PILOT batch (see revised cost
+   estimate above) to get real pass-rate and cost numbers -- not a
+   larger number assumed in advance.
+4. Set the monosemanticity threshold from that real score distribution
    -- not before.
+5. Use the pilot batch's observed pass-rate to determine how large a
+   raw candidate pool is actually needed for the 40-50 concept target.
 6. Only then, re-run the full structural -> monosemanticity -> dedup
    pipeline with the new, real auto-interp scores in place of the
-   heuristic.
+   heuristic -- noting this also depends on the separate, not-yet-
+   started reconciliation between Concept_selection/'s pipeline
+   (monosemanticity -> dedup -> stratification, no structural filter)
+   and concept_selection_v2/'s pipeline (structural -> monosemanticity
+   -> dedup, no stratification) -- two incomplete pipelines that were
+   never merged into one, discovered while investigating this cost
+   estimate and tracked as separate, real, unstarted work.
