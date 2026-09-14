@@ -22,10 +22,12 @@ import pytest
 
 from contract import ConceptCandidate
 from concept_filter_pipeline import PipelineResult, run_concept_filter_pipeline
+from deduplication import DUPLICATE_COSINE_SIMILARITY_THRESHOLD
 from monosemanticity_filter import (
     MONOSEMANTICITY_SCORE_THRESHOLD,
     passes_monosemanticity_filter,
 )
+from structural_token_filter import MAGNITUDE_RATIO_THRESHOLD, STRUCTURAL_TOKEN_FRACTION_THRESHOLD
 from real_backend import _heuristic_auto_interp
 
 
@@ -182,3 +184,39 @@ def test_pipeline_runs_stages_in_locked_order_not_all_at_once():
         for c in (result.monosemanticity_result.accepted + result.monosemanticity_result.rejected)
     }
     assert monosemanticity_considered_ids == structural_accepted_ids
+
+
+def test_monosemanticity_threshold_override_actually_changes_result():
+    """DIRECT TEST of the fix: passing a different monosemanticity_threshold
+    must change which candidates survive -- confirms the override is
+    genuinely wired through, not just accepted and ignored."""
+    candidates = [
+        _make_candidate(
+            f"feat_{i}", magnitude=100.0,
+            top_activating_tokens=[f"word{i}a", f"word{i}b", f"word{i}c"],
+            decoder_vector=[1.0 if j == i else 0.0 for j in range(5)],
+            auto_interp_score=score,
+        )
+        for i, score in enumerate([0.1, 0.3, 0.5, 0.7, 0.9])
+    ]
+
+    # Strict threshold (0.8): only the 0.9-scoring candidate should pass.
+    strict_result = run_concept_filter_pipeline(candidates, monosemanticity_threshold=0.8)
+    # Lenient threshold (0.2): all but the 0.1-scoring candidate should pass.
+    lenient_result = run_concept_filter_pipeline(candidates, monosemanticity_threshold=0.2)
+
+    assert len(strict_result.final_kept) < len(lenient_result.final_kept)
+    assert len(strict_result.final_kept) == 1
+    assert len(lenient_result.final_kept) == 4
+
+
+def test_default_thresholds_unchanged_from_original_module_constants():
+    """Confirms NOT passing any override still matches each filter
+    module's own default constant -- existing callers must see
+    IDENTICAL behavior to before this fix."""
+    import inspect
+    sig = inspect.signature(run_concept_filter_pipeline)
+    assert sig.parameters["monosemanticity_threshold"].default == MONOSEMANTICITY_SCORE_THRESHOLD
+    assert sig.parameters["dedup_threshold"].default == DUPLICATE_COSINE_SIMILARITY_THRESHOLD
+    assert sig.parameters["magnitude_ratio_threshold"].default == MAGNITUDE_RATIO_THRESHOLD
+    assert sig.parameters["structural_fraction_threshold"].default == STRUCTURAL_TOKEN_FRACTION_THRESHOLD
