@@ -8,13 +8,15 @@ survivors, and FREEZES the result as a real, timestamped manifest file
 via manifest_freeze.py -- the actual Part A deliverable, not just an
 in-memory result.
 
-Target size reasoning: the n=50 pilot batch yielded 18/50 final
-survivors (~36% pass rate). To reach the 40-50 concept target,
-starting from ~125 raw candidates is a reasonable first attempt
-(36% x 125 =~ 45) -- but this ratio is based on ONE 40-document corpus
-sample and may not hold exactly at a larger scale. This run's own
-result should be read as evidence for or against that estimate, not
-assumed correct in advance.
+Target size reasoning: UPDATED after the structural filter fix. The
+original n=50 pilot's 36% pass rate was measured BEFORE the structural
+filter's coverage gap was found and fixed -- it included 16/45 (36%)
+false-positive structural artifacts that inflated the apparent pass
+rate. A real post-fix n=125 run produced the TRUE pass rate: 29/125 =
+23.2%. To reach the 40-50 concept target at this real rate, ~175-215
+raw candidates are needed -- this constant is not hardcoded here since
+it should be passed explicitly via the command line, informed by
+whatever the most recent real run showed, not assumed fixed in advance.
 
 Usage:
     python run_full_manifest_selection.py [num_candidates] [num_documents]
@@ -34,7 +36,16 @@ SAE_ID = "layer_13_width_16k_l0_medium"
 SAE_RELEASE = "gemma-scope-2-1b-it-res"
 MODEL_ID = "google/gemma-3-1b-it"
 LOCKED_MONOSEMANTICITY_THRESHOLD = 0.3585
-MANIFEST_OUTPUT_PATH = "manifests/concept_manifest_v1.json"
+MANIFEST_OUTPUT_PATH = "manifests/concept_manifest_v2.json"
+# v1 (manifests/concept_manifest_v1.json) is CONFIRMED CONTAMINATED --
+# 16/45 (36%) were structural artifacts that evaded the pre-fix
+# structural filter (see structural_token_filter.py's decision record).
+# v2 uses the corrected filter. Left as a fixed, explicit path rather
+# than auto-versioning (which freeze_manifest_to_file() does NOT do --
+# an earlier claim that it auto-increments was WRONG and is corrected
+# here, not silently). If a v3 is ever needed, update this constant
+# explicitly again -- don't guess at auto-increment behavior that
+# doesn't exist in this module.
 
 
 def main():
@@ -43,8 +54,9 @@ def main():
 
     print(f"=== Part A real manifest selection run: {num_candidates} candidates, "
           f"{num_documents} documents ===")
-    print(f"Target: 40-50 final concepts. Estimate based on n=50 pilot's 36% pass rate "
-          f"(not guaranteed to hold at this scale -- this run tests that estimate).")
+    print(f"Target: 40-50 final concepts. Estimate based on the REAL post-fix pass rate "
+          f"(29/125 = 23.2%, measured after the structural filter's coverage gap fix -- "
+          f"the earlier 36% included 16/45 false-positive structural artifacts).")
     print()
 
     backend = RealConceptBackend(
