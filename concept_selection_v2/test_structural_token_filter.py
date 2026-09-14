@@ -1,16 +1,33 @@
 """
 Tests for structural_token_filter.py.
 
-Two categories, per researcher's explicit request:
+Three categories:
   1. The actual 5 structural-dominated candidates from the real n=20
      diagnostic run -- confirms the two real magnitude outliers get
-     excluded and the three non-outliers (including feat_3, the
-     high-fraction/low-magnitude case that motivated the conjunction
-     design) do not.
+     excluded, feat_6/feat_8 (below the 90% unconditional threshold)
+     remain kept, and feat_3 (90% fraction) is now CORRECTLY excluded
+     -- see the CORRECTION note below.
   2. Synthetic boundary cases at exactly the threshold values, to
-     confirm the ">" vs ">=" comparison operators are what's intended
-     -- boundary behavior is exactly the kind of thing that's easy to
-     get backwards without a dedicated test catching it.
+     confirm the ">" / ">=" comparison operators are what's intended.
+  3. The NEW unconditional high-fraction rule, tested against the
+     exact real evidence (n=125 manifest run) that motivated it.
+
+CORRECTION, logged explicitly rather than silently changed: the
+original version of this file asserted feat_3 (90% structural fraction,
+0.44x median magnitude, from the n=20 pilot) must NOT be excluded,
+treating it as the motivating case for requiring the magnitude+fraction
+conjunction. That assumption was NEVER actually verified -- nobody
+inspected feat_3's real top-activating tokens to confirm it was a
+legitimate concept rather than another structural artifact; the only
+fact established was that it wasn't a MAGNITUDE outlier. At real n=125
+scale, 16/16 candidates at >=90% structural fraction were confirmed,
+by direct token inspection, to be structural/punctuation/whitespace
+artifacts with ZERO exceptions -- regardless of magnitude. Given that
+unanimous, diverse-token evidence against one never-verified n=20 data
+point, the researcher's explicit call (Option A) was that feat_3 was
+very likely the same phenomenon, simply never caught. This file's
+expectations are corrected accordingly, not silently -- see
+structural_token_filter.py's own decision record for the full evidence.
 """
 
 import pytest
@@ -19,6 +36,7 @@ from contract import ConceptCandidate
 from structural_token_filter import (
     MAGNITUDE_RATIO_THRESHOLD,
     STRUCTURAL_TOKEN_FRACTION_THRESHOLD,
+    HIGH_FRACTION_UNCONDITIONAL_THRESHOLD,
     FilterResult,
     apply_structural_token_filter,
     compute_batch_median_magnitude,
@@ -70,7 +88,8 @@ REAL_STRUCTURAL_DOMINATED_CANDIDATES = {
 
 def test_real_magnitude_outliers_are_excluded():
     """feat_4 and feat_11 (the real >10x magnitude outliers, both at
-    100% structural fraction) must be excluded by this filter."""
+    100% structural fraction) must be excluded by this filter -- via
+    EITHER condition now, but definitely excluded."""
     feat_4 = REAL_STRUCTURAL_DOMINATED_CANDIDATES["feat_4"]
     feat_11 = REAL_STRUCTURAL_DOMINATED_CANDIDATES["feat_11"]
 
@@ -78,17 +97,25 @@ def test_real_magnitude_outliers_are_excluded():
     assert passes_structural_token_filter(feat_11, REAL_BATCH_MEDIAN) is False
 
 
-def test_real_non_outliers_are_not_excluded():
-    """feat_3, feat_6, feat_8 (real structural-dominated but NOT
-    magnitude outliers) must NOT be excluded. feat_3 is the critical
-    case: 90% structural fraction but only 0.44x median magnitude --
-    this is exactly the case that motivated requiring BOTH conditions
-    rather than fraction alone."""
+def test_real_feat_3_is_now_correctly_excluded_via_high_fraction_rule():
+    """CORRECTED per Option A (see module docstring): feat_3 (90%
+    structural fraction, only 0.44x median magnitude -- NOT a magnitude
+    outlier) is now EXCLUDED by the new unconditional high-fraction
+    rule, even though it survives the original conjunction. This
+    reverses the original test's assertion, which encoded a
+    never-verified assumption that feat_3 was a legitimate concept."""
     feat_3 = REAL_STRUCTURAL_DOMINATED_CANDIDATES["feat_3"]
+    assert passes_structural_token_filter(feat_3, REAL_BATCH_MEDIAN) is False
+
+
+def test_real_below_unconditional_threshold_non_outliers_are_not_excluded():
+    """feat_6, feat_8 (60% structural fraction -- above the 50%
+    conjunction threshold but BELOW the 90% unconditional threshold --
+    and NOT magnitude outliers) must NOT be excluded. These are the
+    real cases the conjunction design is still correctly protecting."""
     feat_6 = REAL_STRUCTURAL_DOMINATED_CANDIDATES["feat_6"]
     feat_8 = REAL_STRUCTURAL_DOMINATED_CANDIDATES["feat_8"]
 
-    assert passes_structural_token_filter(feat_3, REAL_BATCH_MEDIAN) is True
     assert passes_structural_token_filter(feat_6, REAL_BATCH_MEDIAN) is True
     assert passes_structural_token_filter(feat_8, REAL_BATCH_MEDIAN) is True
 
@@ -112,20 +139,25 @@ def test_real_data_ratios_match_diagnostic_output():
 # --- Category 2: boundary / edge cases ---
 
 def test_boundary_exactly_5x_magnitude_is_not_excluded():
-    """Exactly 5.0x median magnitude must NOT trigger exclusion --
-    the threshold is strict '>', not '>='. A candidate sitting exactly
-    at 5x with high structural fraction should still pass."""
+    """Exactly 5.0x median magnitude must NOT trigger exclusion via the
+    conjunction -- the threshold is strict '>', not '>='. Uses 60%
+    fraction (above the 50% conjunction threshold, but BELOW the new
+    90% unconditional threshold) to isolate this test to the MAGNITUDE
+    boundary specifically -- using 90% here would confound this test
+    with the new unconditional rule, which doesn't care about magnitude
+    at all."""
     median = 100.0
-    candidate = _make_candidate("boundary_5x", magnitude=500.0, structural_fraction=0.90)
+    candidate = _make_candidate("boundary_5x", magnitude=500.0, structural_fraction=0.60)
     assert candidate.mean_activation_magnitude / median == pytest.approx(5.0)
     assert passes_structural_token_filter(candidate, median) is True
 
 
 def test_boundary_just_above_5x_magnitude_with_high_fraction_is_excluded():
-    """Just above the 5x threshold, combined with high structural
-    fraction, must be excluded."""
+    """Just above the 5x threshold, combined with >50% (but <90%)
+    structural fraction, must be excluded via the conjunction
+    specifically."""
     median = 100.0
-    candidate = _make_candidate("boundary_5x_plus", magnitude=500.01, structural_fraction=0.90)
+    candidate = _make_candidate("boundary_5x_plus", magnitude=500.01, structural_fraction=0.60)
     assert passes_structural_token_filter(candidate, median) is False
 
 
@@ -155,13 +187,49 @@ def test_high_magnitude_alone_without_structural_dominance_is_not_excluded():
     assert passes_structural_token_filter(candidate, median) is True
 
 
-def test_structural_dominance_alone_without_magnitude_outlier_is_not_excluded():
-    """Structural dominance without a magnitude outlier (feat_3's
-    real-world pattern) should NOT be excluded -- this is the core
-    justification for the conjunction over a fraction-only rule."""
+def test_structural_dominance_below_unconditional_threshold_without_magnitude_outlier_is_not_excluded():
+    """Structural dominance BELOW the 90% unconditional threshold (60%
+    here), without a magnitude outlier, should NOT be excluded -- this
+    is what the conjunction design still correctly protects. (This
+    replaces the original test, which used 90% fraction and asserted
+    `is True` -- that assertion is now known to be wrong, per the
+    module-level CORRECTION note; 90% is exactly the new exclusion
+    threshold, not a safe case to assert as "kept.")"""
     median = 100.0
-    candidate = _make_candidate("high_structural_normal_mag", magnitude=110.0, structural_fraction=0.90)
+    candidate = _make_candidate("mid_structural_normal_mag", magnitude=110.0, structural_fraction=0.60)
     assert passes_structural_token_filter(candidate, median) is True
+
+
+# --- Category 3: the NEW unconditional high-fraction rule ---
+
+def test_boundary_exactly_90_percent_fraction_is_excluded_regardless_of_magnitude():
+    """Exactly 90% structural fraction must be excluded via the NEW
+    unconditional rule, even at completely normal magnitude -- the
+    threshold here is '>=', not '>', specifically because feat_77 (one
+    of the 16 real confirmed artifacts) sits at EXACTLY 90%."""
+    median = 100.0
+    candidate = _make_candidate("boundary_90pct_normal_mag", magnitude=110.0, structural_fraction=0.90)
+    assert passes_structural_token_filter(candidate, median) is False
+
+
+def test_boundary_just_below_90_percent_fraction_with_normal_magnitude_is_not_excluded():
+    """Just below 90% fraction (80%, since this file's helper builds
+    exact-count token lists), with normal magnitude, must NOT be
+    excluded by the unconditional rule -- confirms the '>=' boundary
+    doesn't creep below its intended cutoff."""
+    median = 100.0
+    candidate = _make_candidate("boundary_just_below_90pct", magnitude=110.0, structural_fraction=0.80)
+    assert passes_structural_token_filter(candidate, median) is True
+
+
+def test_high_fraction_excludes_even_with_normal_magnitude():
+    """DIRECT test of the real n=125 finding: 100% structural fraction
+    (matching the real feat_26/34/39/etc. <bos> cluster's exact shape)
+    at completely normal magnitude (no relation to the batch median at
+    all) must still be excluded."""
+    median = 100.0
+    candidate = _make_candidate("pure_bos_normal_mag", magnitude=95.0, structural_fraction=1.0)
+    assert passes_structural_token_filter(candidate, median) is False
 
 
 # --- Batch-level tests ---
@@ -189,7 +257,9 @@ def test_apply_filter_end_to_end_matches_real_diagnostic_outcome():
     """Full apply_structural_token_filter() call across a batch shaped like the real
     n=20 run (5 structural-dominated + 15 'normal' filler candidates
     near the median), confirming the bulk interface produces the same
-    accept/reject split as the per-candidate tests above."""
+    accept/reject split as the per-candidate tests above -- UPDATED per
+    the feat_3 correction: feat_3 is now correctly among the rejected,
+    not the accepted."""
     filler = [
         _make_candidate(f"filler_{i}", magnitude=96.28, structural_fraction=0.0)
         for i in range(15)
@@ -202,8 +272,7 @@ def test_apply_filter_end_to_end_matches_real_diagnostic_outcome():
     rejected_ids = {c.feature_id for c in result.rejected}
     accepted_ids = {c.feature_id for c in result.accepted}
 
-    assert rejected_ids == {"feat_4", "feat_11"}
-    assert "feat_3" in accepted_ids
+    assert rejected_ids == {"feat_3", "feat_4", "feat_11"}
     assert "feat_6" in accepted_ids
     assert "feat_8" in accepted_ids
     assert len(result.accepted) + len(result.rejected) == len(batch)

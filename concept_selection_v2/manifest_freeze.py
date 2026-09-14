@@ -120,8 +120,22 @@ def freeze_manifest_to_file(
     When an overwrite IS explicitly allowed, the reason is appended to
     a sibling `.deviations.log` file, preserving the history of every
     override rather than only the latest state.
+
+    BUG FIXED (found via a real run, not caught by any existing test --
+    every test used tempfile.TemporaryDirectory(), which already
+    exists, so the "parent directory doesn't exist yet" path was never
+    actually exercised): this function previously never created
+    output_path's parent directory, causing a real manifest-freezing
+    run to fail with FileNotFoundError after a full, expensive
+    rescoring pass had already completed, losing that in-memory result
+    entirely since nothing was checkpointed. Month 1's original
+    manifest.py (see manifest.py, now superseded by this module) DID
+    call os.makedirs() for this exact reason -- this was a real
+    regression relative to that design, not a new problem to solve
+    from scratch.
     """
     path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
 
     if path.exists() and allow_overwrite_with_reason is None:
         raise ManifestAlreadyFrozenError(

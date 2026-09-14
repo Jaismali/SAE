@@ -158,3 +158,24 @@ def test_manifest_json_is_valid_and_contains_expected_top_level_keys():
     assert "metadata" in parsed
     assert "concepts" in parsed
     assert parsed["metadata"]["concept_count"] == 2
+
+
+def test_freeze_to_file_creates_missing_parent_directory():
+    """DIRECT REGRESSION TEST for the real bug found during the actual
+    n=125 manifest run: freeze_manifest_to_file() previously never
+    created output_path's parent directory, causing a real run to fail
+    with FileNotFoundError AFTER an expensive rescoring pass had
+    already completed, losing that result entirely. Every prior test
+    used tempfile.TemporaryDirectory(), which already exists, so this
+    exact path was never exercised until it broke for real."""
+    candidates = _make_placeholder_candidates(3)
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        # Nested, non-existent subdirectory -- exactly like the real
+        # "manifests/concept_manifest_v1.json" path that failed.
+        nested_output_path = str(Path(tmp_dir) / "manifests" / "concept_manifest_v1.json")
+        assert not Path(nested_output_path).parent.exists()
+
+        manifest = freeze_manifest_to_file(candidates, nested_output_path)
+
+        assert Path(nested_output_path).exists()
+        assert manifest.metadata.concept_count == 3
