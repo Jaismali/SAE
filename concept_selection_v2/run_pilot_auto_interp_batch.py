@@ -36,7 +36,7 @@ import sys
 
 from real_backend import RealConceptBackend
 from structural_token_filter import apply_structural_token_filter
-from held_out_context_sampling import sample_held_out_contexts
+from held_out_context_sampling import sample_held_out_contexts, has_sufficient_variance
 from llm_auto_interp_local_client import load_auto_interp_model, run_llm_auto_interp_local
 
 LAYER = 13
@@ -112,7 +112,21 @@ def main():
     print()
 
     print("=== Stage 2: real Qwen auto-interp scoring for structural survivors ===")
-    scores = []
+    print("Three-way categorization, per real evidence from an earlier pilot run:")
+    print("  SCORED: got a real, meaningful correlation score")
+    print("  INSUFFICIENT_DATA: corpus lacks enough activating examples for this")
+    print("    feature to produce a meaningful score -- NOT a low-monosemanticity")
+    print("    judgment, just missing data. Checked BEFORE calling the LLM, saving")
+    print("    compute on candidates that cannot be scored regardless of judge quality.")
+    print("  PARSE_FAILED: simulator's response could not be parsed even after retries")
+    print("    -- real evidence of judge-model limitation, not silently retried past")
+    print("    indefinitely or hidden inside a misleading 0.0 score.")
+    print()
+
+    scored = []
+    insufficient_data = []
+    parse_failed = []
+
     for i, candidate in enumerate(structural_result.accepted):
         feature_idx = int(candidate.feature_id.split("_")[-1])
         feature_activations = activations[:, feature_idx]
@@ -131,11 +145,24 @@ def main():
         )
         if not held_out:
             print(f"  [{i+1}/{len(structural_result.accepted)}] {candidate.feature_id}: "
-                  f"SKIPPED, no held-out contexts available")
+                  f"INSUFFICIENT_DATA (no held-out contexts available at all)")
+            insufficient_data.append(candidate.feature_id)
             continue
 
         held_out_contexts = [context for context, _ in held_out]
         true_activations = [activation for _, activation in held_out]
+
+        # Check variance BEFORE calling the LLM -- saves compute on
+        # candidates that cannot produce a meaningful score regardless
+        # of judge quality, per the real finding that 10/48 candidates
+        # in an earlier run had all-zero true activations even after
+        # the top-and-random sampling fix (genuine corpus exhaustion).
+        if not has_sufficient_variance(true_activations):
+            print(f"  [{i+1}/{len(structural_result.accepted)}] {candidate.feature_id}: "
+                  f"INSUFFICIENT_DATA (true activations have ~zero variance: "
+                  f"{[round(v, 2) for v in true_activations]}) -- skipping LLM call")
+            insufficient_data.append(candidate.feature_id)
+            continue
 
         try:
             result = run_llm_auto_interp_local(
@@ -145,36 +172,51 @@ def main():
                 held_out_contexts=held_out_contexts,
                 true_activations=true_activations,
             )
+        except ValueError as e:
+            print(f"  [{i+1}/{len(structural_result.accepted)}] {candidate.feature_id}: "
+                  f"PARSE_FAILED (even after retries) -- {e}")
+            parse_failed.append(candidate.feature_id)
+            continue
         except Exception as e:
             print(f"  [{i+1}/{len(structural_result.accepted)}] {candidate.feature_id}: "
-                  f"FAILED -- {type(e).__name__}: {e}")
+                  f"UNEXPECTED FAILURE -- {type(e).__name__}: {e}")
+            parse_failed.append(candidate.feature_id)
             continue
 
-        scores.append((candidate.feature_id, result.score, result.explanation))
+        scored.append((candidate.feature_id, result.score, result.explanation))
         print(f"  [{i+1}/{len(structural_result.accepted)}] {candidate.feature_id}: "
-              f"score={result.score:.3f} -- {result.explanation[:80]!r}")
-        if result.score == 0.0:
-            print(f"      DIAGNOSTIC (score exactly 0.0 -- checking which side has zero variance):")
-            print(f"      true_activations:      {[round(v, 2) for v in result.true_activations]}")
-            print(f"      simulated_activations:  {result.simulated_activations}")
+              f"SCORED score={result.score:.3f} -- {result.explanation[:80]!r}")
 
     print()
-    print("=== Observed score distribution (no threshold applied -- read this yourself) ===")
-    if not scores:
-        print("  No scores obtained -- something failed for every candidate, investigate above.")
+    print("=== Summary ===")
+    total = len(structural_result.accepted)
+    print(f"  Total structural survivors: {total}")
+    print(f"  SCORED: {len(scored)}")
+    print(f"  INSUFFICIENT_DATA (excluded from distribution -- not a real judgment): {len(insufficient_data)}")
+    print(f"  PARSE_FAILED (excluded from distribution -- real judge-model limitation): {len(parse_failed)}")
+    print()
+
+    if not scored:
+        print("  No usable scores obtained -- investigate the failures above.")
         return
 
-    sorted_scores = sorted(scores, key=lambda x: x[1])
+    print("=== Observed score distribution, SCORED candidates ONLY "
+          "(no threshold applied -- read this yourself) ===")
+    sorted_scores = sorted(scored, key=lambda x: x[1])
     for feature_id, score, explanation in sorted_scores:
         print(f"  {feature_id}: {score:.3f}")
 
-    values = [s[1] for s in scores]
+    values = [s[1] for s in scored]
     print()
-    print(f"  n={len(values)}, min={min(values):.3f}, max={max(values):.3f}, "
+    print(f"  n={len(values)} (usable, out of {total} structural survivors), "
+          f"min={min(values):.3f}, max={max(values):.3f}, "
           f"median={sorted(values)[len(values)//2]:.3f}")
     print()
-    print("Use this REAL distribution to set the monosemanticity threshold --")
-    print("per the scoping plan, do not assume a threshold in advance of seeing this.")
+    print("Use this REAL, PROPERLY-CATEGORIZED distribution to set the monosemanticity")
+    print("threshold -- per the scoping plan, do not assume a threshold in advance.")
+    print("The INSUFFICIENT_DATA and PARSE_FAILED counts are themselves real findings:")
+    print("report them honestly rather than folding them into the scored distribution")
+    print("or silently discarding them from the record.")
 
 
 if __name__ == "__main__":
