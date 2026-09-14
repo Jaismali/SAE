@@ -18,10 +18,11 @@ Usage:
 """
 
 import json
+import sys
 
 from structural_token_filter import compute_structural_fraction
 
-MANIFEST_PATH = "manifests/concept_manifest_v1.json"
+MANIFEST_PATH = sys.argv[1] if len(sys.argv) > 1 else "manifests/concept_manifest_v1.json"
 HIGH_FRACTION_INSPECTION_THRESHOLD = 0.80
 
 
