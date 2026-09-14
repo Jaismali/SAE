@@ -121,3 +121,26 @@ def sample_held_out_contexts(
         results.append((context_text, true_activation))
 
     return results
+
+
+def has_sufficient_variance(true_activations: List[float], min_variance: float = 1e-6) -> bool:
+    """Checks whether a held-out set's TRUE activation values have
+    enough variance to make a correlation score meaningful at all.
+
+    Added after a real pilot run showed 10/48 candidates still
+    producing all-zero true activations even after the top-and-random
+    sampling fix -- these are features where the reference corpus
+    simply doesn't contain enough of the feature's activating examples
+    (a corpus-size limitation, the same root issue as Diagnostic 8's
+    non-convergence finding, resurfacing here). Calling the LLM judge
+    on these wastes compute AND produces a misleading 0.000 score that
+    looks like "no correlation" when it actually means "no data to
+    correlate against." This check lets a caller skip the LLM call
+    entirely and categorize these separately, rather than silently
+    scoring them as if they were real judgments.
+    """
+    if len(true_activations) < 2:
+        return False
+    mean_val = sum(true_activations) / len(true_activations)
+    variance = sum((v - mean_val) ** 2 for v in true_activations) / len(true_activations)
+    return variance > min_variance

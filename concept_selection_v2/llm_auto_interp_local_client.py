@@ -155,6 +155,47 @@ def call_simulator_local(
     return parse_simulator_response(raw_text, expected_count=len(held_out_contexts))
 
 
+DEFAULT_MAX_SIMULATOR_RETRIES = 2
+
+
+def call_simulator_local_with_retry(
+    model, tokenizer, explanation: str, held_out_contexts: List[str],
+    max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS_SIMULATOR,
+    max_retries: int = DEFAULT_MAX_SIMULATOR_RETRIES,
+) -> List[float]:
+    """Retries the simulator call on a parsing failure (wrong count of
+    numbers returned), appending an increasingly explicit formatting
+    reminder each attempt.
+
+    Added after a real pilot run showed the simulator step failing to
+    parse for 2/48 candidates (feat_7, feat_47 -- e.g. returning 9
+    numbers instead of the requested 10). This is real evidence of
+    weaker instruction-following at 7B scale (the honest capability
+    caveat documented from the start), not something to silently work
+    around by lowering expectations -- retrying with a firmer
+    reminder is a legitimate, logged mitigation; if it still fails
+    after max_retries, the caller must be told explicitly (raises the
+    final ValueError), never silently padded or guessed.
+    """
+    last_error = None
+    for attempt in range(max_retries + 1):
+        prompt = build_simulator_prompt(explanation, held_out_contexts)
+        if attempt > 0:
+            prompt += (
+                f"\n\nIMPORTANT: your previous response did not contain exactly "
+                f"{len(held_out_contexts)} numbers. You MUST provide EXACTLY "
+                f"{len(held_out_contexts)} comma-separated numbers, one per example, "
+                f"in the same order, and nothing else."
+            )
+        raw_text = _generate(model, tokenizer, prompt, max_new_tokens)
+        try:
+            return parse_simulator_response(raw_text, expected_count=len(held_out_contexts))
+        except ValueError as e:
+            last_error = e
+            continue
+    raise last_error
+
+
 def run_llm_auto_interp_local(
     model,
     tokenizer,
@@ -173,7 +214,7 @@ def run_llm_auto_interp_local(
         )
 
     explanation = call_explainer_local(model, tokenizer, top_activating_examples)
-    simulated_activations = call_simulator_local(model, tokenizer, explanation, held_out_contexts)
+    simulated_activations = call_simulator_local_with_retry(model, tokenizer, explanation, held_out_contexts)
 
     return compute_auto_interp_score(
         explanation=explanation,

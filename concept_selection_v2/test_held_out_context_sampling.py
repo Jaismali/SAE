@@ -165,3 +165,35 @@ def test_near_top_fraction_zero_is_pure_random():
     # are nonzero -- this test just confirms the parameter is respected
     # structurally, not that a specific outcome occurs.
     assert len(results) == 10
+
+
+# --- has_sufficient_variance ---
+
+from held_out_context_sampling import has_sufficient_variance
+
+
+def test_has_sufficient_variance_false_for_all_zero_real_case():
+    """Real case from the pilot run: feat_10/13/17/20/24/30/31/33/43/44
+    all had all-zero true_activations even after the sampling fix --
+    genuine corpus exhaustion, not a sampling bug."""
+    assert has_sufficient_variance([0.0] * 10) is False
+
+
+def test_has_sufficient_variance_true_for_real_variable_case():
+    """Real case from the pilot run: feat_18/29 had genuine variance
+    but the simulator still predicted flat zeros -- a real simulator
+    failure, distinct from insufficient data."""
+    assert has_sufficient_variance(
+        [0.0, 0.0, 0.0, 0.0, 146.99, 144.49, 138.74, 0.0, 146.88, 146.29]
+    ) is True
+
+
+def test_has_sufficient_variance_false_for_too_short_list():
+    assert has_sufficient_variance([5.0]) is False
+    assert has_sufficient_variance([]) is False
+
+
+def test_has_sufficient_variance_false_for_constant_nonzero():
+    """All the same nonzero value also has zero variance -- must be
+    caught the same way as all-zero."""
+    assert has_sufficient_variance([5.0] * 10) is False
